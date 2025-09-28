@@ -1,0 +1,102 @@
+name: verify-and-proof
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install deps
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -r requirements.txt
+
+      - name: Verify vault
+        run: |
+          . .venv/bin/activate
+          ./vaultscanner.py verify .vault/latest/findings.vault
+
+      - name: Build PDF
+        run: |
+          . .venv/bin/activate
+          ./vaultscanner.py export .vault/latest/findings.vault --pdf .vault/latest/report.pdf
+
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vault-report
+          path: .vault/latest/report.pdf
+
+  check-anchor:
+    # Only runs if both XRPL_ENDPOINT and XRPL_SEED are set as repo secrets
+    if: ${{ secrets.XRPL_ENDPOINT && secrets.XRPL_SEED }}
+    runs-on: ubuntu-latest
+    needs: verify
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install CLI utils (curl/jq/xxd)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq vim-common
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install deps
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -r requirements.txt
+
+      - name: Write XRPL env file (not committed)
+        run: |
+          mkdir -p .vault
+          printf "XRPL_ENDPOINT=%s\nXRPL_SEED=%s\n" \
+            "${{ secrets.XRPL_ENDPOINT }}" "${{ secrets.XRPL_SEED }}" > .vault/.env
+          chmod 600 .vault/.env
+
+      - name: Env sanity check
+        run: |
+          . .venv/bin/activate
+          make env-check
+
+      - name: Check anchor against XRPL memo
+        run: |
+          . .venv/bin/activate
+          make check-anchor
+
